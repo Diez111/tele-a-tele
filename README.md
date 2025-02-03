@@ -7,7 +7,7 @@ Este proyecto es un script en Python que automatiza la tarea de leer mensajes de
   Puedes instalar manualmente las dependencias ejecutando:
 
 ```bash
-pip install re os asyncio requests json sys telethon
+pip install re os asyncio requests json sys hashlib tqdm telethon
 ```
 
 ## Uso
