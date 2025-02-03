@@ -28,6 +28,10 @@ pip install re os asyncio requests json sys telethon
    - Filtra mensajes duplicados antes de reenviar.
    - Descarga y envía archivos organizados por partes.
 
+3.**API & HASH**
+--https://my.telegram.org/apps
+--Saca tu api y hash de la pagina de desarroladores de telegram
+
 ## Licencia
 
 Este proyecto está licenciado bajo la licencia **GPL-3.0**, lo que significa que puedes modificar y distribuir el código siempre que mantengas la misma licencia y divulgues el código fuente de cualquier modificación.
