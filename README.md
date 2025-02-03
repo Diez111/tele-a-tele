@@ -29,8 +29,9 @@ pip install re os asyncio requests json sys telethon
    - Descarga y envía archivos organizados por partes.
 
 3.**API & HASH**
---https://my.telegram.org/apps
---Saca tu api y hash de la pagina de desarroladores de telegram
+
+  -https://my.telegram.org/apps
+  -Saca tu api y hash de la pagina de desarroladores de telegram
 
 ## Licencia
 
