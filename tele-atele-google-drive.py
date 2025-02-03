@@ -14,14 +14,16 @@ import asyncio
 import requests
 import json
 import sys
+import hashlib
+from tqdm import tqdm
 
 from telethon import TelegramClient
 
 # ============================
 # Configuración de Telegram
 # ============================
-API_ID = "22024051"  # API ID de Telegram actualizado
-API_HASH = "980f3955f97cb944bf61906c2b74536f"  # API Hash de Telegram actualizado
+API_ID = "API_ID"  # API ID de Telegram actualizado
+API_HASH = "API_HASH"  # API Hash de Telegram actualizado
 SESSION_NAME = "tele_atele_session"
 # Se solicitará el número de teléfono interactivamente, por lo que se elimina el valor fijo.
 
@@ -80,22 +82,28 @@ def validar_telefono(telefono):
 
 def compute_fingerprint(msg):
     """
-    Calcula una huella digital (fingerprint) del mensaje para detectar duplicados.
-    Para mensajes de texto se utiliza el contenido en minúsculas y sin espacios extremos.
-    Para mensajes con medios se utiliza el id del objeto (si existe) o el id del mensaje.
+    Calcula una huella digital para el mensaje.
+    Si hay texto (o caption) no vacío, se utiliza un MD5 del contenido.
+    Si no, para documentos se usa un MD5 del nombre de archivo, y en su defecto se usa el ID.
+    Para fotos o medios se utiliza el ID.
     """
-    if msg.message:
-         return "txt:" + msg.message.strip().lower()
+    if msg.message and msg.message.strip():
+         contenido = msg.message.strip().lower().encode("utf-8")
+         return "txt:" + hashlib.md5(contenido).hexdigest()
+    elif msg.document:
+         try:
+              for attr in msg.document.attributes:
+                  if attr.__class__.__name__ == "DocumentAttributeFilename":
+                      nombre = attr.file_name.strip().lower().encode("utf-8")
+                      return "doc:" + hashlib.md5(nombre).hexdigest()
+              return "doc:" + str(msg.document.id)
+         except Exception:
+              return "doc:" + str(msg.document.id)
     elif msg.photo:
          try:
               return "photo:" + str(msg.photo.id)
-         except AttributeError:
+         except Exception:
               return "photo:" + str(msg.id)
-    elif msg.document:
-         try:
-              return "doc:" + str(msg.document.id)
-         except AttributeError:
-              return "doc:" + str(msg.id)
     elif msg.media:
          return "media:" + str(msg.id)
     return None
@@ -188,33 +196,46 @@ async def process_game(client, destino, juego, partes):
         else:
             print(f"Saltando la parte {parte} de {juego} por error en descarga o por duplicado.")
 
-async def forward_message(client, destino, source_entity, msg, idx, sem, dest_fp_set):
-    """Envía un mensaje reenviándolo con concurrencia controlada mediante semáforo."""
+async def forward_message(client, destino, source_entity, msg, idx, sem):
+    """Reenvía un mensaje: si tiene contenido multimedia, lo descarga y lo vuelve a subir; si es solo texto, lo envía.
+    Se utiliza un semáforo para controlar la concurrencia."""
     async with sem:
-         # Calcular la huella digital del mensaje
-         fp = compute_fingerprint(msg)
-         if fp and fp in dest_fp_set:
-              print(f"Mensaje {idx} duplicado en destino. Omitiendo...")
-              return
-
          try:
-             if msg.message:
-                 preview = msg.message[:30].replace("\n", " ")
-             elif msg.photo:
-                 preview = "[Foto]"
-             elif msg.document:
-                 preview = "[Documento]"
-             elif msg.media:
-                 preview = "[Media]"
-             else:
-                 preview = "[Sin contenido]"
-             print(f"Reenviando mensaje {idx}: {preview}")
-             await client.forward_messages(destino, msg, from_peer=source_entity)
-             # Luego de reenviar, agregamos la huella digital al conjunto
-             if fp:
-                  dest_fp_set.add(fp)
+              # Si el mensaje contiene medios (fotos, documentos, etc.), se descarga y se reenvía el archivo.
+              if msg.photo or msg.document or msg.media:
+                   print(f"Procesando mensaje {idx} con archivo, descargando y reenviando...")
+                   pbar = None
+                   def progress_callback(current, total):
+                       nonlocal pbar
+                       if pbar is None:
+                           pbar = tqdm(total=total, unit='B', unit_scale=True, desc=f"Archivo {idx}", 
+                                       colour="green", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]", leave=False)
+                       pbar.update(current - pbar.n)
+                       if current >= total:
+                           pbar.close()
+                   file_path = await client.download_media(msg, progress_callback=progress_callback)
+                   if file_path:
+                        caption = msg.message if msg.message else ""
+                        # Enviar el archivo (foto, documento o media) junto con su caption
+                        await client.send_file(destino, file_path, caption=caption)
+                        try:
+                             os.remove(file_path)
+                        except Exception as e:
+                             print(f"Error al eliminar archivo temporal {file_path}: {e}")
+                        preview = caption[:30] if caption else "[Archivo sin caption]"
+                   else:
+                        preview = "[Error al descargar el archivo]"
+              else:
+                   # Si no tiene medios, se envía el mensaje de texto
+                   if msg.message:
+                        preview = msg.message[:30].replace("\n", " ")
+                   else:
+                        preview = "[Sin contenido]"
+                   print(f"Enviando mensaje {idx}: {preview}")
+                   await client.send_message(destino, msg.message)
+              print(f"Mensaje {idx} enviado correctamente.")
          except Exception as e:
-             print(f"Error reenviando mensaje {idx}: {e}")
+              print(f"Error reenviando mensaje {idx}: {e}")
 
 # ============================
 # Función Principal
@@ -263,13 +284,11 @@ async def main():
     dest_msgs = []
     async for m in client.iter_messages(destino, limit=200):
          dest_msgs.append(m)
-    dest_fp_set = set()
+    dest_text_set = set()
     for m in dest_msgs:
-         fp = compute_fingerprint(m)
-         if fp:
-              dest_fp_set.add(fp)
-    print(f"Se han obtenido {len(dest_fp_set)} huellas digitales del destino.")
-    
+         if m.message and m.message.strip():
+              dest_text_set.add(m.message.strip())
+
     print("Recuperando mensajes del grupo origen. Esto puede tardar dependiendo de la cantidad de mensajes...")
     mensajes = []
     # Recorrer TODOS los mensajes del grupo origen (sin límite)
@@ -277,18 +296,33 @@ async def main():
          mensajes.append(message)
     print(f"Se han recuperado {len(mensajes)} mensajes.")
  
+    # Ordenar los mensajes de forma ascendente (desde el más antiguo hasta el más moderno)
+    mensajes.sort(key=lambda m: m.date)
+
     print("\nLista de mensajes:")
     for idx, mensaje in enumerate(mensajes):
-         if mensaje.message:
+         preview = ""
+         if mensaje.message and mensaje.message.strip():
              preview = mensaje.message[:30].replace("\n", " ")
-         elif mensaje.photo:
-             preview = "[Foto]"
          elif mensaje.document:
-             preview = "[Documento]"
+              file_name = None
+              try:
+                   for attr in mensaje.document.attributes:
+                        if attr.__class__.__name__ == "DocumentAttributeFilename":
+                             file_name = attr.file_name
+                             break
+              except Exception:
+                   pass
+              if file_name:
+                   preview = f"[Documento] {file_name}"
+              else:
+                   preview = "[Documento]"
+         elif mensaje.photo:
+              preview = "[Foto]"
          elif mensaje.media:
-             preview = "[Media]"
+              preview = "[Media]"
          else:
-             preview = "[Sin contenido]"
+              preview = "[Sin contenido]"
          print(f"{idx}: {preview}")
  
     seleccion = safe_input("Ingrese 'todos' para pasar todos los mensajes o ingrese los índices separados por coma (ej: 0,1,3-5): ").strip().lower()
@@ -312,25 +346,33 @@ async def main():
                  except Exception as e:
                      print(f"Error procesando el índice {parte}: {e}")
  
-    # Pre-filtrar los índices seleccionados para evitar duplicados en destino
+    # Pre-filtrar los índices seleccionados comparando solo los textos
     nuevos_indices = []
     for i in indices:
          if i < 0 or i >= len(mensajes):
               print(f"Índice {i} fuera de rango, omitiendo...")
          else:
               msg = mensajes[i]
-              fp = compute_fingerprint(msg)
-              if fp and fp in dest_fp_set:
-                   print(f"Mensaje {i} duplicado en destino. Omitiendo...")
+              if msg.message and msg.message.strip():
+                   txt = msg.message.strip()
+                   if txt in dest_text_set:
+                        print(f"Mensaje {i} duplicado en destino (texto idéntico). Omitiendo...")
+                   else:
+                        nuevos_indices.append(i)
+                        dest_text_set.add(txt)
               else:
+                   # Si el mensaje no tiene texto (por ejemplo, multimedia sin caption) se envía de todas formas.
                    nuevos_indices.append(i)
-                   if fp:
-                        dest_fp_set.add(fp)
-    print(f"Se reenviarán {len(nuevos_indices)} mensajes después de filtrar duplicados.")
+    print(f"Se reenviarán {len(nuevos_indices)} mensajes después de filtrar duplicados (solo por texto).")
     sem = asyncio.Semaphore(10)
-    tasks = [asyncio.create_task(forward_message(client, destino, source_entity, mensajes[i], i, sem, dest_fp_set))
-             for i in nuevos_indices]
-    await asyncio.gather(*tasks)
+    nuevos_indices.sort()
+    pbar = tqdm(total=len(nuevos_indices), desc="Enviando mensajes", colour="green", unit="mensaje", 
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{percentage:3.0f}%]")
+    for idx, i in enumerate(nuevos_indices):
+         # Se envía cada mensaje de forma secuencial para preservar el orden.
+         await forward_message(client, destino, source_entity, mensajes[i], i, sem)
+         pbar.update(1)
+    pbar.close()
     
     print("Procesamiento completado. Cerrando cliente...")
     await client.disconnect()
