@@ -28,7 +28,7 @@ pip install re os asyncio requests json sys telethon
    - Filtra mensajes duplicados antes de reenviar.
    - Descarga y envía archivos organizados por partes.
 
-3.**API & HASH**
+3. **API & HASH**
 
   -https://my.telegram.org/apps.
   
